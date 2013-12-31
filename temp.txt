@@ -1,0 +1,590 @@
+/*
+    This is the main code. 
+*/
+
+//Use the standard namespace; it will carry throughout the whole code. 
+using namespace std; 
+
+//Correct the outdated constant. 
+#define  _WIN32_WINNT 0x0500
+
+/**********  HEADER FILES  **********/
+
+#include <windows.h>
+#include <string>
+#include <assert.h>
+#include <cstdlib>
+#include <vector>
+
+#include "debug.h"
+#include "resources.h"
+
+
+
+
+
+
+
+
+
+/**********  CONSTANTS AND MACROS  **********/
+
+//Constants
+#define MAIN_WINDOW_TITLE_TEXT "Title here"
+#define MAIN_WINDOW_START_X CW_USEDEFAULT
+#define MAIN_WINDOW_START_Y CW_USEDEFAULT
+#define MAIN_WINDOW_WIDTH 800
+#define MAIN_WINDOW_HEIGHT 400
+
+//Macros
+#define ShowError(msg) MessageBox(NULL, msg, "Error", MB_OK | MB_ICONINFORMATION)
+
+
+
+
+
+
+
+
+
+
+
+/**********  ENUMERATIONS  **********/
+
+
+
+
+
+
+
+
+
+
+/**********  FUNCTION AND CLASS DECLARATIONS  **********/
+
+////  Functions
+inline void PutPixel(HDC, unsigned short, unsigned short); 
+inline void PutPixelBlack(HDC, unsigned short, unsigned short); 
+void DrawMandelBrot(HDC hDc); 
+
+////  Threads
+DWORD WINAPI DrawColumn(LPVOID); 
+
+////  Procedures
+LRESULT CALLBACK MainWinProc(HWND, UINT, WPARAM, LPARAM);
+
+////  Structs
+struct bounds_info; 
+struct thread_info1; 
+
+////  Classes
+class total_bounds_info; 
+class drawing_info; 
+
+    
+
+
+
+
+
+
+
+
+
+
+/**********  GLOBAL VARIABLES  **********/
+
+//Window Handles -- Stores handles to windows 
+HWND hMainWindow;     //Handle to main window
+    
+//Class Names -- Stores class names of windows 
+const char mainWinClassName[] = "Windows App";     //Class name of main window class
+
+//Event handlers
+//window_event_handler MainEventHandler;     //Handler of the main window
+
+//Memory device contexts. 
+HDC hDcMem;               //Stores the information about the Mandelbrot set in memory. 
+
+
+
+
+
+
+
+
+/**********  STRUCT DEFINITIONS **********/
+struct bounds_info
+{
+    double ReMax;   //Maximum for the real part. 
+    double ReMin;   //Minimum for the real part. 
+    double ImMax;   //Maximum for the imaginary part. 
+    double ImMin;   //Minimum for the imaginary part. 
+}; 
+
+
+struct thread_info1
+{
+    /*
+        A pointer of this is passed to each of the threads when the Mandelbrot
+        set is drawn. 
+    */
+    unsigned short StartColumn;    //Column to start drawing on. 
+    unsigned short EndColumn;      //Column to end drawing on. 
+}; 
+    
+    
+
+
+
+
+
+
+
+
+
+
+/**********  CLASS DEFINITIONS **********/
+//Note: Methods are defined later. 
+
+
+
+class total_bounds_info
+{   
+    public: 
+        //// Declare variables
+        vector <bounds_info> BoundsHistory;                         //This vector stores every single 
+                                                                    //group of bounds used. 
+        double Scale;                                               //Scale to draw in. 
+        
+        
+        //// Declare methods
+        total_bounds_info(double, double, double, double);          //Constructor
+        void NewBounds(double, double, double, double);             //Adds a new group of bounds to BoundsHistory. 
+        void BackBound();                                           //Goes back a bound. 
+        void ClearBounds();                                         //Clears the bound history.  
+} TotalBoundsInfo(2.0, -2.0, 1.0, -1.0); 
+
+class drawing_info
+{
+    public: 
+        //// Declare variables
+        BYTE Hue;                                //Hue to draw in. 
+        unsigned int Sat;                        //Saturation of the image. 
+        BYTE Lum;                                //Luminosity of the image. 
+        
+        bool Invert;                             //Whether or not to invert the picture. 
+        bool isMonochrome;                       //Whether or not to draw in monochrome. 
+        unsigned short ThreadNo;                 //Number of threads to draw with. 
+        unsigned short EscapeNo;                 //Number of iterations necessary to determine whether 
+                                                 //or not a point is in the Mandelbrot set. 
+        bool ProperMagnify;                      //Whether or not the image's escape number should
+                                                 //be dynamic, determined by how zoomed in one is. 
+         
+        //// Declare methods. 
+        drawing_info(BYTE, BYTE, BYTE, bool,     //Constructor
+                     bool, unsigned short, 
+                     unsigned short, bool); 
+        void ResetMagnify();                     //For resetting the magnification; only relevant
+                                                 //when ProperMagnify is true. 
+} DrawingInfo(0, 128, 128, false, true, 10, 500, false);
+
+
+
+
+
+
+
+
+
+
+
+
+/**********  FUNCTION DEFINITIONS **********/
+//NOTE: This does not include procedures. 
+
+inline void PutPixel(HDC hDc,                          //DC to draw to. 
+                     unsigned short xPos,              //X-position of the pixel. 
+                     unsigned short yPos)              //Y-position of the pixel. 
+{
+    /*
+        This puts a pixel at the given coordinates to the given DC. 
+    */
+    RECT rc; 
+    rc.left = xPos; 
+    rc.right = xPos + 1; 
+    rc.bottom = yPos; 
+    rc.top = yPos + 1; 
+    FillRect(hDc, &rc, HBRUSH(GetStockObject(DC_BRUSH)));
+}
+
+inline void PutPixelBlack(HDC hDc,                          //DC to draw to. 
+                          unsigned short xPos,              //X-position of the pixel. 
+                          unsigned short yPos)              //Y-position of the pixel. 
+{
+    /*
+        This puts a black pixel at the given coordinates to the given DC. 
+    */
+    RECT rc; 
+    rc.left = xPos; 
+    rc.right = xPos + 35; //::DEBUG::
+    rc.bottom = yPos; 
+    rc.top = yPos + 35; 
+    FillRect(hDc, &rc, HBRUSH(GetStockObject(BLACK_BRUSH)));
+}
+
+void DrawMandelbrot(HDC hDc) //DC to draw to. 
+{
+    /*
+        This function draws the Mandelbrot set to the given DC with the 
+        drawing information in global variables. It draws using threads, vertically. 
+    */
+    
+    ////  Set the variables.     
+    //Set the memory DC. 
+    ::hDcMem = CreateCompatibleDC(hDc);  
+    
+    //Set the thread informations' device context. 
+    thread_info1 ThreadInfo; 
+    
+    //For the loop
+    float StartColumn = 0;                                         //Column to start drawing to.  
+    float Increment = MAIN_WINDOW_WIDTH / DrawingInfo.ThreadNo;    //Columns to increment by. 
+    
+    // Note that these are floating values, to accomodate rounding errors. 
+    
+    //Assign each of the threads' values and create the threads. 
+    for (unsigned short i = 0; i < DrawingInfo.ThreadNo; ++i)
+    {
+        //Replace the current columns in the thread. 
+        ThreadInfo.StartColumn = int(StartColumn); 
+        ThreadInfo.EndColumn = int(StartColumn + Increment); 
+        
+        //Update the current column. 
+        StartColumn += Increment;
+        
+        //Initiate the thread. 
+        {
+            DWORD ThreadID;  //Temporary variable for saving the thread's ID; 
+                             //hence, the new scope. 
+            CreateThread(NULL, 0, DrawColumn, &ThreadInfo, 0, &ThreadID); 
+        }
+    }
+    
+    //Blit the memory DC to the DC to the screen. 
+    BitBlt(hDc, 0, 0, 800, 400, ::hDcMem, 0, 0, SRCCOPY); 
+}
+
+
+DWORD WINAPI DrawColumn(LPVOID param) //Handle to thread info. 
+{
+    ////  Set variables  
+    //Get the thread information. 
+    thread_info1 ThreadInfo = *((thread_info1*)param); 
+    //DEBUG::
+    //AlertExt<string>(StringConverter(ThreadInfo.StartColumn)+","+StringConverter(ThreadInfo.EndColumn)); 
+    
+    //Original real and imaginary parts of the complex number. 
+    double OrRePart; 
+    double OrImPart; 
+    
+    //Current real and imaginary parts of the complex number. 
+    double RePart; 
+    double ImPart; 
+    
+    //Set the squares of the parts. 
+    double RePartSqr; 
+    double ImPartSqr; 
+    
+    //Saturation for coloring (dependent on escape speeds). 
+    BYTE Sat; 
+    
+    //Counter for the escape loops. 
+    unsigned short count; 
+    
+    
+    //Start drawing. 
+    for (unsigned short x = ThreadInfo.StartColumn; x <= ThreadInfo.EndColumn; ++x)
+    {
+        for (unsigned short y = 0; y < MAIN_WINDOW_HEIGHT; ++y)
+        {
+            //Set the real part and imaginary parts. 
+            OrRePart = TotalBoundsInfo.BoundsHistory[TotalBoundsInfo.BoundsHistory.size() - 1].ReMin + 
+                       x * TotalBoundsInfo.Scale; 
+            OrImPart = TotalBoundsInfo.BoundsHistory[TotalBoundsInfo.BoundsHistory.size() - 1].ImMin +
+                       y * TotalBoundsInfo.Scale; 
+            
+            RePart = OrRePart; 
+            ImPart = OrImPart; 
+            
+            //Start the escape loop. 
+            count = 0; 
+            while (count < DrawingInfo.EscapeNo)
+            {
+                //Sets squares of the complex number. 
+                RePartSqr = RePart * RePart; 
+                ImPartSqr = ImPart * ImPart; 
+                
+                //Checks if its magnitude is greater than 2; if so, escape. 
+                if (RePartSqr + ImPartSqr >= 4)
+                    break; 
+                
+                //Update complex values. 
+                ImPart = 2 * RePart * ImPart + OrImPart; 
+                RePart = RePartSqr - ImPartSqr + OrRePart; 
+                
+                //Increase the counter. 
+                ++count; 
+            }
+            
+            //Check if it's color or monochrome. 
+            if (DrawingInfo.isMonochrome)
+            {
+                //Get the color and put the pixel down (in monochrome)
+                //Sat = 255 - int((count * 255) / DrawingInfo.EscapeNo); 
+                //SetDCBrushColor(::hDcMem, RGB(Sat, Sat, Sat)); 
+                
+                //::DEBUG::
+                //if (count == DrawingInfo.EscapeNo)
+                    PutPixelBlack(::hDcMem, x, y); 
+            }
+        }
+    }
+    
+    //Terminate the thread. 
+    ExitThread(0); 
+}
+
+
+
+
+
+
+
+
+
+
+
+/**********  METHOD DEFINITIONS **********/
+
+////  drawing_info
+drawing_info::drawing_info(BYTE Hue0,                     //Hue to set
+                           BYTE Sat0,                     //Saturation to set
+                           BYTE Lum0,                     //Luminosity to set
+                           bool Invert0,                  //State of inversion to set
+                           bool isMonochrome0,            //Monochromity to set
+                           unsigned short ThreadNo0,      //Number of threads to set
+                           unsigned short EscapeNo0,      //Number of iterations to set
+                           bool ProperMagnify0)           //State of proper magnification to set
+{
+    //Set all the variables. 
+    Hue = Hue0; 
+    Sat = Sat0; 
+    Lum = Lum0; 
+    Invert = Invert0; 
+    isMonochrome = isMonochrome0; 
+    ThreadNo = ThreadNo0; 
+    EscapeNo = EscapeNo0; 
+    ProperMagnify = ProperMagnify0; 
+}
+
+void drawing_info::ResetMagnify()
+{
+     /*
+         This resets the drawing scale as you zoom in closer. 
+     */
+     
+     //You're supposed to be properly magnified. 
+     assert(DrawingInfo.ProperMagnify); 
+}
+
+
+//// total_bounds_info
+
+void total_bounds_info::NewBounds(double ReMax,   //New max. bound for the reals. 
+                                  double ReMin,   //New min. bound for the reals. 
+                                  double ImMax,   //New max. bound for the imaginaries. 
+                                  double ImMin)   //New min. bound for the imaginaries. 
+{
+    /*
+        This method gives a new set of bounds to the history. 
+    */
+    
+    //Transfer arguments to a new set of information about bounds. 
+    bounds_info BoundsInfo; 
+    BoundsInfo.ReMax = ReMax; 
+    BoundsInfo.ReMin = ReMin; 
+    BoundsInfo.ImMax = ImMax; 
+    BoundsInfo.ImMin = ImMin; 
+    
+    //Add that to the history. 
+    BoundsHistory.push_back(BoundsInfo); 
+    
+    //Reset the scale. 
+    Scale = (ReMax - ReMin) / MAIN_WINDOW_WIDTH; 
+}
+
+
+total_bounds_info::total_bounds_info(double ReMax,   //New max. bound for the reals. 
+                                     double ReMin,   //New min. bound for the reals. 
+                                     double ImMax,   //New max. bound for the imaginaries. 
+                                     double ImMin)   //New min. bound for the imaginaries. 
+{
+    /*
+        This constructor adds the initial values given to the history. 
+    */
+    
+    //Transfer arguments to a new set of information about bounds. 
+    bounds_info BoundsInfo; 
+    BoundsInfo.ReMax = ReMax; 
+    BoundsInfo.ReMin = ReMin; 
+    BoundsInfo.ImMax = ImMax; 
+    BoundsInfo.ImMin = ImMin; 
+    
+    //Add that to the history. 
+    BoundsHistory.push_back(BoundsInfo); 
+    
+    //Reset the scale. 
+    Scale = (ReMax - ReMin) / MAIN_WINDOW_WIDTH; 
+}
+    
+
+
+
+
+
+
+
+
+
+
+
+/**********  MAIN  **********/
+
+int WINAPI WinMain(HINSTANCE hThisInstance,
+                   HINSTANCE hPrevInstance,
+                   LPSTR lpszArgument,
+                   int cmdShow)
+{
+    ////  Declare variables
+    MSG msg;                  //Generic variable used to store/process messages. 
+    WNDCLASSEX winclMain;     //Store the information for the window's class. 
+    
+    
+    ////  Set the window class's information
+    //Basic window information. 
+    winclMain.hInstance = hThisInstance;
+    winclMain.lpszClassName = ::mainWinClassName;
+    winclMain.lpfnWndProc = MainWinProc; 
+    winclMain.style = CS_DBLCLKS; 
+    winclMain.cbSize = sizeof(WNDCLASSEX);
+
+    //Icon, menu, and cursor. 
+    winclMain.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    winclMain.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    winclMain.hCursor = LoadCursor(NULL, IDC_ARROW);
+    winclMain.lpszMenuName = NULL;
+    
+    //No extra memory needs to be allocated. 
+    winclMain.cbClsExtra = 0;
+    winclMain.cbWndExtra = 0;
+    
+    //Use Window's default background color as the background of the window. 
+    winclMain.hbrBackground = (HBRUSH) COLOR_BACKGROUND;
+    
+    
+    ////  Register the class
+    if (!RegisterClassEx(&winclMain))
+    {
+        ShowError("Failed to register class."); 
+        return 0; 
+    }
+    
+    
+    ////  Create the window 
+    ::hMainWindow = CreateWindowEx(0, 
+                                   ::mainWinClassName,
+                                   MAIN_WINDOW_TITLE_TEXT,
+                                   WS_OVERLAPPEDWINDOW,
+                                   MAIN_WINDOW_START_X, 
+                                   MAIN_WINDOW_START_Y,
+                                   MAIN_WINDOW_WIDTH,
+                                   MAIN_WINDOW_HEIGHT,
+                                   HWND_DESKTOP,
+                                   NULL,
+                                   hThisInstance,
+                                   NULL);
+    
+    
+    ////  Show the window 
+    ShowWindow(::hMainWindow, cmdShow);
+    
+    
+    ////  Go through the message loop
+    while (GetMessage(&msg, NULL, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    
+    ////  Return what was posted by PostQuitMessage (since that will exit
+    //// the message loop)
+    return msg.wParam;
+}
+
+
+
+
+
+
+
+
+
+/**********  PROCEDURE DEFINITIONS  **********/
+
+LRESULT CALLBACK MainWinProc(HWND hWnd, 
+                             UINT msg, 
+                             WPARAM wParam, 
+                             LPARAM lParam)
+{
+    switch (msg)
+    {
+        case WM_CREATE: 
+        {
+            //Get the window's DC. 
+            HDC hDc = GetDC(hWnd);
+            
+            //Draw the Mandelbrot set. 
+            DrawMandelbrot(hDc);
+            
+            //Release the DC. 
+            ReleaseDC(hWnd, hDc); 
+        }
+        break; 
+        
+        case WM_PAINT: 
+        {
+            //Set the paintstruct variable. 
+            PAINTSTRUCT PaintStruct;  
+            
+            //Begin painting, blit the memory DC to the screen's DC, and end the painting. 
+            HDC hDc = BeginPaint(hWnd, &PaintStruct); 
+            BitBlt(hDc, 0, 0, 800, 400, ::hDcMem, 0, 0, SRCCOPY);     
+            EndPaint(hWnd, &PaintStruct); 
+            
+            //Release the DC. 
+            ReleaseDC(hWnd, hDc); 
+        }
+        break; 
+        
+        case WM_DESTROY:
+            PostQuitMessage(0); 
+        break; 
+        
+        default:
+            return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+
+    return 0;
+}

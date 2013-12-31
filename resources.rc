@@ -1,0 +1,10 @@
+#include "resources.h"
+#include <windows.h>
+
+IDM_MENU MENU
+{
+    POPUP "&File"
+    {
+        MENUITEM "&Exit", CM_FILE_EXIT
+    }
+}
